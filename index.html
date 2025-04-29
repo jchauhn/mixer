@@ -1,0 +1,121 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Crypto Mixer</title>
+    <script src="https://cdn.jsdelivr.net/npm/web3@1.7.0/dist/web3.min.js"></script>
+    <script src="mixer_js/mixer.wasm.js"></script> <!-- Circom-generated WASM -->
+</head>
+<body>
+    <h1>Crypto Mixer (Educational)</h1>
+    <button onclick="deposit()">Deposit 0.1 ETH</button>
+    <button onclick="withdraw()">Withdraw</button>
+    <script>
+        const contractAddress = "0x..."; // Deployed Mixer.sol address
+        const verifierAddress = "0x..."; // Deployed Verifier.sol address
+        const abi = [/* Mixer.sol ABI */];
+        let web3, contract, accounts;
+
+        async function init() {
+            if (window.ethereum) {
+                web3 = new Web3(window.ethereum);
+                accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+                contract = new web3.eth.Contract(abi, contractAddress);
+            }
+        }
+
+        async function deposit() {
+            const secret = web3.utils.randomHex(32);
+            const nullifier = web3.utils.randomHex(32);
+            // Compute commitment using Poseidon (via server or local lib)
+            const commitment = await computePoseidon(secret, nullifier);
+            await contract.methods.deposit(commitment).send({
+                from: accounts[0],
+                value: web3.utils.toWei("0.1", "ether")
+            });
+            // Store secret, nullifier locally (e.g., localStorage for demo)
+            localStorage.setItem('secret', secret);
+            localStorage.setItem('nullifier', nullifier);
+            alert("Deposit successful!");
+        }
+
+        async function withdraw() {
+            const secret = localStorage.getItem('secret');
+            const nullifier = localStorage.getItem('nullifier');
+            const recipient = accounts[0];
+            // Fetch Merkle proof from server
+            const { root, pathElements, pathIndices, leafIndex } = await fetchMerkleProof(commitment);
+            // Generate zk-proof
+            const proof = await generateProof(secret, nullifier, pathElements, pathIndices, root, recipient);
+            const nullifierHash = await computePoseidon(nullifier);
+            // Withdraw
+            await contract.methods.withdraw(nullifierHash, root, recipient, proof).send({ from: accounts[0] });
+            alert("Withdrawal successful!");
+        }
+
+        async function computePoseidon(...inputs) {
+            // In practice, use a Poseidon JS library or server call
+            return "0x..."; // Placeholder
+        }
+
+        async function fetchMerkleProof(commitment) {
+            // Fetch from server
+            const response = await fetch(`/merkle-proof?commitment=${commitment}`);
+            return await response.json();
+        }
+
+        async function generateProof(secret, nullifier, pathElements, pathIndices, root, recipient) {
+            // Use Circom-generated WASM
+            const input = {
+                secret, nullifier, root, recipient,
+                pathElements, pathIndices,
+                nullifierHash: await computePoseidon(nullifier)
+            };
+            const { proof } = await snarkjs.groth16.fullProve(input, "mixer.wasm", "mixer.zkey");
+            return [proof.pi_a[0], proof.pi_a[1], proof.pi_b[0][1], proof.pi_b[0][0], 
+                    proof.pi_b[1][1], proof.pi_b[1][0], proof.pi_c[0], proof.pi_c[1]];
+        }
+
+        init();
+    </script>
+</body>
+</html>
