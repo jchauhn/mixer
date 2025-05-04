@@ -19,8 +19,8 @@ template Mixer(levels) {
 
     // Compute commitment
     component commitmentHasher = Poseidon(2);
-    commitmentHasher.inputs[0] <== secret;
-    commitmentHasher.inputs[1] <== nullifier;
+    commitmentHasher.inputs <== secret;
+    commitmentHasher.inputs[2] <== nullifier;
     signal commitment;
     commitment <== commitmentHasher.out;
 

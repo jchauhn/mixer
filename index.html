@@ -44,7 +44,15 @@
     <meta charset="UTF-8">
     <title>Crypto Mixer</title>
     <script src="https://cdn.jsdelivr.net/npm/web3@1.7.0/dist/web3.min.js"></script>
-    <script src="mixer_js/mixer.wasm.js"></script> <!-- Circom-generated WASM -->
+    <script src="https://unpkg.com/snarkjs@latest/build/snarkjs.min.js"></script>
+
+    <script src="https://cdn.jsdelivr.net/npm/circomlibjs@latest/dist/circomlibjs.bundle.js"></script>
+
+    <script src="./mixer_js/mixer.wasm.js"></script>  <!-- Circom-generated WASM -->
+
+    <script src="./mixer_js/mixer_final.zkey.js"></script> <!-- Circom-generated ZKey -->
+
+    <script src="https://cdn.jsdelivr.net/npm/merkletreejs@latest/index.min.js"></script>
 </head>
 <body>
     <h1>Crypto Mixer (Educational)</h1>
@@ -59,61 +67,126 @@
         async function init() {
             if (window.ethereum) {
                 web3 = new Web3(window.ethereum);
-                accounts = await ethereum.request({ method: 'eth_requestAccounts' });
-                contract = new web3.eth.Contract(abi, contractAddress);
+                try {
+                    accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+                    contract = new web3.eth.Contract(abi, contractAddress);
+                    mixerWASM = await fetch("./mixer_js/mixer.wasm").then(response => response.arrayBuffer());
+                    mixerZKEY = JSON.parse(mixer_final_zkey);
+                    document.getElementById("status").innerText = "Web3 initialized. Connected account: " + accounts;
+                } catch (error) {
+                    document.getElementById("status").innerText = "Error connecting to MetaMask: " + error.message;
+                }
+            } else {
+                document.getElementById("status").innerText = "MetaMask not detected.";
             }
         }
 
         async function deposit() {
-            const secret = web3.utils.randomHex(32);
-            const nullifier = web3.utils.randomHex(32);
-            // Compute commitment using Poseidon (via server or local lib)
-            const commitment = await computePoseidon(secret, nullifier);
-            await contract.methods.deposit(commitment).send({
-                from: accounts[0],
-                value: web3.utils.toWei("0.1", "ether")
-            });
-            // Store secret, nullifier locally (e.g., localStorage for demo)
-            localStorage.setItem('secret', secret);
-            localStorage.setItem('nullifier', nullifier);
-            alert("Deposit successful!");
+            if (!contract) {
+                document.getElementById("status").innerText = "Contract not initialized.";
+                return;
+            }
+            const secret = circomlibjs.babyJub.randomScalar();
+            const nullifier = circomlibjs.babyJub.randomScalar();
+            const commitmentInput = [secret, nullifier];
+            const commitment = circomlibjs.poseidon(commitmentInput);
+            const commitmentHex = web3.utils.padLeft(web3.utils.toHex(commitment), 64);
+
+            try {
+                document.getElementById("status").innerText = "Depositing...";
+                await contract.methods.deposit(commitmentHex).send({
+                    from: accounts,
+                    value: web3.utils.toWei("0.1", "ether")
+                });
+                
+                // Store secret and nullifier locally
+                localStorage.setItem('secret', secret.toString());
+                localStorage.setItem('nullifier', nullifier.toString());
+                localStorage.setItem('commitment', commitment.toString());
+                document.getElementById("status").innerText = "Deposit successful! Commitment: " + commitment.toString();
+            } catch (error) {
+                document.getElementById("status").innerText = "Deposit failed: " + error.message;
+            }
         }
 
         async function withdraw() {
+            if (!contract) {
+                document.getElementById("status").innerText = "Contract not initialized.";
+                return;
+            }
             const secret = localStorage.getItem('secret');
             const nullifier = localStorage.getItem('nullifier');
-            const recipient = accounts[0];
-            // Fetch Merkle proof from server
-            const { root, pathElements, pathIndices, leafIndex } = await fetchMerkleProof(commitment);
-            // Generate zk-proof
-            const proof = await generateProof(secret, nullifier, pathElements, pathIndices, root, recipient);
-            const nullifierHash = await computePoseidon(nullifier);
-            // Withdraw
-            await contract.methods.withdraw(nullifierHash, root, recipient, proof).send({ from: accounts[0] });
-            alert("Withdrawal successful!");
-        }
+            const commitment = localStorage.getItem('commitment');
+            const recipient = accounts;
 
-        async function computePoseidon(...inputs) {
-            // In practice, use a Poseidon JS library or server call
-            return "0x..."; // Placeholder
-        }
+            if (!secret ||!nullifier ||!commitment) {
+                document.getElementById("status").innerText = "Secret, nullifier, or commitment not found. Please make a deposit first.";
+                return;
+            }
 
-        async function fetchMerkleProof(commitment) {
-            // Fetch from server
-            const response = await fetch(`/merkle-proof?commitment=${commitment}`);
-            return await response.json();
-        }
+            document.getElementById("status").innerText = "Generating Merkle proof...";
+            const commitmentHex = web3.utils.padLeft(web3.utils.toHex(commitment), 64);
 
-        async function generateProof(secret, nullifier, pathElements, pathIndices, root, recipient) {
-            // Use Circom-generated WASM
-            const input = {
-                secret, nullifier, root, recipient,
-                pathElements, pathIndices,
-                nullifierHash: await computePoseidon(nullifier)
-            };
-            const { proof } = await snarkjs.groth16.fullProve(input, "mixer.wasm", "mixer.zkey");
-            return [proof.pi_a[0], proof.pi_a[1], proof.pi_b[0][1], proof.pi_b[0][0], 
-                    proof.pi_b[1][1], proof.pi_b[1][0], proof.pi_c[0], proof.pi_c[1]];
+            try {
+                const commitmentCount = await contract.methods.getCommitmentCount().call();
+                const currentCommitments = [];
+                for (let i = 0; i < commitmentCount; i++) {
+                    currentCommitments.push(await contract.methods.getCommitment(i).call());
+                }
+
+                const leaves = currentCommitments.map(c => Buffer.from(c.slice(2), 'hex'));
+                const tree = new MerkleTree(leaves, circomlibjs.poseidon, { hashLeaves: false });
+                const leaf = Buffer.from(commitmentHex.slice(2), 'hex');
+                const leafIndex = leaves.findIndex(l => l.equals(leaf));
+
+                if (leafIndex === -1) {
+                    document.getElementById("status").innerText = "Commitment not found in the Merkle tree.";
+                    return;
+                }
+
+                const proof = tree.getProof(leafIndex);
+                const pathElements = proof.map(p => '0x' + Buffer.from(p.data).toString('hex'));
+                const pathIndices = tree.getProofPath(leafIndex).map(p => p? 1 : 0);
+                const root = '0x' + tree.getRoot().toString('hex');
+
+                document.getElementById("status").innerText = "Generating zk-proof...";
+                const nullifierHashInput = [nullifier];
+                const nullifierHash = circomlibjs.poseidon(nullifierHashInput);
+                const nullifierHashHex = web3.utils.padLeft(web3.utils.toHex(nullifierHash), 64);
+                const rootHex = root;
+                const recipientDecimal = web3.utils.toBN(recipient).toString();
+
+                const input = {
+                    secret: secret,
+                    nullifier: nullifier,
+                    pathElements: pathElements,
+                    pathIndices: pathIndices,
+                    root: root,
+                    nullifierHash: nullifierHash,
+                    recipient: recipientDecimal
+                };
+
+                const proofData = await snarkjs.groth16.fullProve(input, mixerWASM, mixerZKEY);
+                const solidityProof = [
+                    proofData.proof.pi_a,
+                    proofData.proof.pi_a[2],
+                    proofData.proof.pi_b[2],
+                    proofData.proof.pi_b,
+                    proofData.proof.pi_b[2][2],
+                    proofData.proof.pi_b[2],
+                    proofData.proof.pi_c,
+                    proofData.proof.pi_c[2]];
+
+                document.getElementById("status").innerText = "Withdrawing...";
+                await contract.methods.withdraw(nullifierHashHex, rootHex, recipient, solidityProof).send({ from: accounts });
+                localStorage.removeItem('secret');
+                localStorage.removeItem('nullifier');
+                localStorage.removeItem('commitment');
+                document.getElementById("status").innerText = "Withdrawal successful!";
+
+            } catch (error) {
+                document.getElementById("status").innerText = "Withdrawal failed: " + error.message;
+            }
         }
 
         init();

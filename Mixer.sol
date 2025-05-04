@@ -25,7 +25,7 @@ contract Mixer {
         verifier = Verifier(verifierAddress);
         // Initialize Merkle tree with a zero leaf
         commitments.push(bytes32(0));
-        merkleRoot = bytes32(0);
+        merkleRoot = MerkleTree.getRoot(commitments);;
     }
 
     // Deposit 0.1 ETH and add commitment to Merkle tree
@@ -34,17 +34,12 @@ contract Mixer {
         require(commitments.length < 2**TREE_DEPTH, "Tree is full");
 
         // Add commitment to the tree
-        uint32 leafIndex = uint32(commitments.length);
         commitments.push(commitment);
 
         // Update Merkle root (simplified for demo; use incremental updates in production)
-        bytes32[] memory leaves = new bytes32[](commitments.length);
-        for (uint256 i = 0; i < commitments.length; i++) {
-            leaves[i] = commitments[i];
-        }
-        merkleRoot = MerkleTree.getRoot(leaves);
+        merkleRoot = MerkleTree.getRoot(commitments);
 
-        emit Deposit(commitment, leafIndex, block.timestamp);
+        emit Deposit(commitment, uint32(commitments.length - 1), block.timestamp);
     }
 
     // Withdraw using zk-proof
@@ -52,7 +47,7 @@ contract Mixer {
         bytes32 nullifierHash,
         bytes32 root,
         address recipient,
-        uint256[8] calldata proof
+        uint256[1] calldata proof
     ) external {
         require(!nullifierUsed[nullifierHash], "Nullifier already used");
         require(root == merkleRoot, "Invalid Merkle root");
@@ -60,9 +55,9 @@ contract Mixer {
         // Verify zk-proof
         require(
             verifier.verifyProof(
-                [proof[0], proof[1]],
-                [[proof[2], proof[3]], [proof[4], proof[5]]],
-                [proof[6], proof[7]],
+                [proof, proof[2]],
+                [[proof[3], proof[4]], [proof[5], proof[6]]],
+                [proof[7], proof[8]],
                 [uint256(root), uint256(nullifierHash), uint256(uint160(recipient))]
             ),
             "Invalid proof"
@@ -81,5 +76,16 @@ contract Mixer {
     // Get the current number of commitments
     function getCommitmentCount() external view returns (uint256) {
         return commitments.length;
+    }
+
+    // Get the current Merkle root
+    function getMerkleRoot() external view returns (bytes32) {
+        return merkleRoot;
+    }
+
+    // Get a specific commitment by index for testing
+    function getCommitment(uint256 index) external view returns (bytes32) {
+        require(index < commitments.length, "Index out of bounds");
+        return commitments[index];
     }
 }
