@@ -41,10 +41,13 @@ contract MerkleTreeWithHistory {
   }
 
   function _insert(uint256 _leaf) internal returns (uint32 index) {
+    
     uint32 _nextIndex = nextIndex;
     require(_nextIndex != uint32(2)**levels, "Merkle tree is full. No more leaves can be added");
     uint32 currentIndex = _nextIndex;
     uint256 currentLevelHash = _leaf;
+
+    // console.log("currentLevelHash", _leaf);
     uint256 left;
     uint256 right;
 
@@ -64,8 +67,11 @@ contract MerkleTreeWithHistory {
     uint32 newRootIndex = (currentRootIndex + 1) % ROOT_HISTORY_SIZE;
     currentRootIndex = newRootIndex;
     roots[newRootIndex] = currentLevelHash;
+    console.log("Root", currentLevelHash);
     nextIndex = _nextIndex + 1;
     return _nextIndex;
+
+    
   }
 
   function isKnownRoot(uint256 _root) public view returns (bool) {

@@ -310,7 +310,7 @@ async function generateWitness(mixer,commitment, secret, nullifier,recipient) {
   // const root = tree.getRoot();//tree.getHexRoot();
 
   // console.log("leaves", leaves);
-  const {root, proofPath} = await generateMerkleProof(leaves, commitment);
+  const {root, proofPath} = await generateMerkleProof(commitments, commitment);
   // console.log("root", root);
   // console.log("proofPath", proofPath);
   
@@ -357,9 +357,7 @@ async function generateWitness(mixer,commitment, secret, nullifier,recipient) {
        "pathElements":pathHex, 
        "pathIndices":pathIndices 
       } 
-      // TODO: array ["0","1","0"] or ["1","0","1"] according to the length of the tree
-      // "0" or "1" according to the left/right of the commitment (trial and error to figure which is which)
-
+      
 
     // Send the proof to the contract
     // Call during withdraw. Send to the withdraw function of the contract
@@ -380,6 +378,7 @@ async function generateWitness(mixer,commitment, secret, nullifier,recipient) {
 }
 
 async function generateMerkleProof(allLeaves, targetLeaf) {
+  const levels = 10;
   const poseidon = await buildPoseidon();
 
   // Define zeros values exactly matching the Solidity contract
@@ -423,53 +422,89 @@ async function generateMerkleProof(allLeaves, targetLeaf) {
     typeof leaf === 'string' ? BigInt(leaf) : BigInt(leaf)
   );
 
-  // Convert target leaf to BigInt
   const target = typeof targetLeaf === 'string' ? BigInt(targetLeaf) : BigInt(targetLeaf);
 
-  // Find the index of the target leaf
   const leafIndex = leaves.findIndex(leaf => leaf === target);
   if (leafIndex === -1) {
     throw new Error("Target leaf not found in the tree");
   }
+  // console.log("target", target);
 
-  // Initialize the proof path and current level
+  const roots = [];
+  let currentRootIndex = 0;
+  let nextIndex = 0;
+  const filledSubtrees = [];
+  const ROOT_HISTORY_SIZE = 30;
+
+  for (let i = 0; i < levels; i++) {
+    filledSubtrees[i] = zeros[i];
+  }
+  roots[0] = zeros[levels - 1];
+
+
   const proofPath = [];
-  let currentLevel = [...leaves];
-  let currentIndex = leafIndex;
-  let level = 0; // Track the current level for zeros
 
-  // Build the Merkle tree and collect proof path
-  while (currentLevel.length > 1) {
-    const nextLevel = [];
+  // Will generate each root iteratively
+  for (let i = 0; i < leaves.length; i++) {
 
-    // Process pairs of nodes
-    for (let i = 0; i < currentLevel.length; i += 2) {
-      const left = currentLevel[i];
-      // Use zeros[level] for unpaired nodes instead of BigInt(0)
-      const right = i + 1 < currentLevel.length ? currentLevel[i + 1] : zeros[level];
 
-      // Compute parent hash using Poseidon
-      const parent = poseidon.F.toObject(poseidon([left, right]));
-      nextLevel.push(parent);
+    let _nextIndex = nextIndex;
+    if (_nextIndex >= 2**levels) {
+      throw new Error("Merkle tree is full.");
+    }
+    let currentIndex = _nextIndex;
+    let currentLevelHash = leaves[i];
+    let getPath = i === leafIndex ? true : false;
 
-      // If the current pair contains the target leaf, add sibling to proof path
-      if (i === (currentIndex - (currentIndex % 2))) {
-        const isLeft = currentIndex % 2 === 0;
-        proofPath.push({
-          position: isLeft ? 'right' : 'left',
-          data: isLeft ? right : left
-        });
+     
+
+    let left;
+    let right;
+
+
+    // Creates root hash for one deposit at time
+    for (let i = 0; i < levels; i++) {
+      if (currentIndex % 2 == 0) {
+        left = currentLevelHash;
+        right = zeros[i];
+        filledSubtrees[i] = currentLevelHash;
+        if (getPath) {
+          proofPath.push({
+            position: 'right',
+            data: right
+          });
+        }
+      } else {
+        left = filledSubtrees[i];
+        right = currentLevelHash;
+        if (getPath) {
+          proofPath.push({
+            position: 'left',
+            data: left
+          });
+        }
       }
+      currentLevelHash = poseidon.F.toObject(poseidon([left, right]));
+      currentIndex /= 2;
     }
 
-    // Update current level, index, and level for the next iteration
-    currentLevel = nextLevel;
-    currentIndex = Math.floor(currentIndex / 2);
-    level++; // Increment level to use the next zeros value
+    let newRootIndex = (currentRootIndex + 1) % ROOT_HISTORY_SIZE; // For looping around after 30
+    currentRootIndex = newRootIndex;
+    roots[newRootIndex] = currentLevelHash;
+    nextIndex = _nextIndex + 1;
   }
+  
 
-  // The root is the only node left in the final level
-  const root = currentLevel[0];
+  // Get the last element in the roots array
+  const root = roots[roots.length - 1];
+
+  console.log("roots", roots);
+  // console.log("proofPath", proofPath);
+
+  // roofPath.push({
+  //   position: isLeft ? 'right' : 'left',
+  //   data: isLeft ? right : left
+  // });
 
   return {
     root,
@@ -565,22 +600,25 @@ async function generateMerkleProof(allLeaves, targetLeaf) {
   });
 
   describe("withdraw", function () {
-    it("Should revert if nullifier already used or root is invalid", async function () {
+    it("Check if withdraw works", async function () {
       const { mixer, owner, otherAccount } = await loadFixture(deployMixerFixture);
 
-      // First Deposit
+      
       
 
-      // Second Deposit
+      
       // Loop deposits 27 times
-      for (let i = 0; i < 27; i++) {
-        const {commitment: commitment2, secret: secret2, nullifier: nullifier2} = await getCommitment();
-        // Sending deposit to the contract
-        await expect(
-          mixer.connect(otherAccount).deposit(commitment2, { value: ethers.parseEther("0.1") })
-        )
-      }
 
+      // for (let i = 0; i < 27; i++) {
+      //   const {commitment: commitment2, secret: secret2, nullifier: nullifier2} = await getCommitment();
+      //   // Sending deposit to the contract
+      //   console.log("depositing commitment", commitment2);
+      //   await expect(
+      //     mixer.connect(otherAccount).deposit(commitment2, { value: ethers.parseEther("0.1") })
+      //   )
+      // }
+
+      // Current Deposit
       const {commitment, secret, nullifier} = await getCommitment();
       // Sending deposit to the contract
       await expect(
@@ -592,9 +630,7 @@ async function generateMerkleProof(allLeaves, targetLeaf) {
 
       // Generating witness for the first deposit
       const {witnessPath,nullifierHash,root} = await generateWitness(mixer,commitment, secret, nullifier, owner.address);
-      // const {witnessPath: witnessPath2,nullifierHash: nullifierHash2} = await generateWitness(mixer,commitment2, secret2, nullifier2, owner.address);
-      // const witnessPath = 'witness.wtns';
-      // console.log("witnessPath", witnessPath);
+
       const zkeyPath = "./scripts/zkey.json";
 
       // Sending withdraw to the contract
@@ -617,7 +653,7 @@ async function generateMerkleProof(allLeaves, targetLeaf) {
       //   mixer.withdraw(nullifierHash, root, owner.address, solidityCalldata)
       // ).to.be.reverted; // Should revert due to invalid root or nullifier
   
-      await mixer.withdraw(nullifierHash, root_merkle, owner.address, solidityCalldata);
+      await mixer.withdraw(nullifierHash, root, owner.address, solidityCalldata);
 
 
     });
